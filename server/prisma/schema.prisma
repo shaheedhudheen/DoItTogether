@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String   @id @default(uuid())
+  email            String   @unique
+  passwordHash     String
+  displayName      String
+  avatarUrl        String?
+  prayerEnabled    Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user1Partnerships Partnership[] @relation("User1")
+  user2Partnerships Partnership[] @relation("User2")
+
+  createdCommonTasks CommonTask[] @relation("CommonTaskCreator")
+  createdDailyTasks  DailyTask[]  @relation("DailyTaskCreator")
+  dailyTaskCompletions DailyTaskCompletion[]
+  prayerCompletions PrayerCompletion[]
+  createdTodos       Todo[]       @relation("TodoCreator")
+  todoCompletions    TodoCompletion[]
+}
+
+model Partnership {
+  id         String   @id @default(uuid())
+  user1Id    String
+  user2Id    String?
+  inviteCode String   @unique
+  status     String   // pending, active, dissolved
+  createdAt  DateTime @default(now())
+
+  user1      User     @relation("User1", fields: [user1Id], references: [id])
+  user2      User?    @relation("User2", fields: [user2Id], references: [id])
+
+  commonTasks CommonTask[]
+  dailyTasks  DailyTask[]
+  prayerTasks PrayerTask[]
+  todos       Todo[]
+}
+
+model CommonTask {
+  id            String   @id @default(uuid())
+  partnershipId String
+  createdById   String
+  title         String
+  description   String?
+  emoji         String   @default("📋")
+  status        String   // active, completed, archived
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  partnership   Partnership @relation(fields: [partnershipId], references: [id], onDelete: Cascade)
+  createdBy     User        @relation("CommonTaskCreator", fields: [createdById], references: [id])
+}
+
+model DailyTask {
+  id            String   @id @default(uuid())
+  partnershipId String
+  createdById   String
+  title         String
+  category      String   // meal, exercise, hobby, custom
+  isShared      Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  sortOrder     Int
+  createdAt     DateTime @default(now())
+
+  partnership   Partnership @relation(fields: [partnershipId], references: [id], onDelete: Cascade)
+  createdBy     User        @relation("DailyTaskCreator", fields: [createdById], references: [id])
+  completions   DailyTaskCompletion[]
+}
+
+model DailyTaskCompletion {
+  id             String   @id @default(uuid())
+  dailyTaskId    String
+  userId         String
+  completionDate DateTime @db.Date
+  createdAt      DateTime @default(now())
+
+  dailyTask      DailyTask @relation(fields: [dailyTaskId], references: [id], onDelete: Cascade)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([dailyTaskId, userId, completionDate])
+}
+
+model PrayerTask {
+  id            String   @id @default(uuid())
+  partnershipId String
+  name          String   // fajr, dhuhr, asr, maghrib, isha
+  sortOrder     Int
+
+  partnership   Partnership @relation(fields: [partnershipId], references: [id], onDelete: Cascade)
+  completions   PrayerCompletion[]
+}
+
+model PrayerCompletion {
+  id             String   @id @default(uuid())
+  prayerTaskId   String
+  userId         String
+  completionDate DateTime @db.Date
+  createdAt      DateTime @default(now())
+
+  prayerTask     PrayerTask @relation(fields: [prayerTaskId], references: [id], onDelete: Cascade)
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([prayerTaskId, userId, completionDate])
+}
+
+model Todo {
+  id             String   @id @default(uuid())
+  partnershipId  String
+  createdById    String
+  title          String
+  description    String?
+  assignedToBoth Boolean  @default(false)
+  dueDate        DateTime?
+  status         String   // pending, partial, completed, expired
+  createdAt      DateTime @default(now())
+
+  partnership    Partnership @relation(fields: [partnershipId], references: [id], onDelete: Cascade)
+  createdBy      User        @relation("TodoCreator", fields: [createdById], references: [id])
+  completions    TodoCompletion[]
+}
+
+model TodoCompletion {
+  id          String   @id @default(uuid())
+  todoId      String
+  userId      String
+  completedAt DateTime @default(now())
+
+  todo        Todo @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([todoId, userId])
+}
