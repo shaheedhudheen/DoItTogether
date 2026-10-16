@@ -6,6 +6,19 @@ import { getIo } from '../../socket';
 
 const prisma = new PrismaClient();
 
+// Only expose public profile fields for partners — never the full User row.
+const publicUserSelect = {
+  id: true,
+  displayName: true,
+  avatarUrl: true,
+  prayerEnabled: true
+} as const;
+
+const partnershipInclude = {
+  user1: { select: publicUserSelect },
+  user2: { select: publicUserSelect }
+} as const;
+
 export const generateInvite = async (req: AuthRequest, res: Response) => {
   try {
     // Check if user already has a pending or active partnership
@@ -14,7 +27,7 @@ export const generateInvite = async (req: AuthRequest, res: Response) => {
         OR: [{ user1Id: req.user.id }, { user2Id: req.user.id }],
         status: { in: ['pending', 'active'] }
       },
-      include: { user1: true, user2: true }
+      include: partnershipInclude
     });
     if (existing && existing.status === 'active') {
       return res.status(400).json({ success: false, message: 'You already have an active partnership' });
@@ -30,7 +43,7 @@ export const generateInvite = async (req: AuthRequest, res: Response) => {
         inviteCode,
         status: 'pending'
       },
-      include: { user1: true, user2: true }
+      include: partnershipInclude
     });
     res.json({ success: true, data: { code: inviteCode, partnership: created } });
   } catch (error) {
@@ -41,6 +54,19 @@ export const generateInvite = async (req: AuthRequest, res: Response) => {
 export const joinPartnership = async (req: AuthRequest, res: Response) => {
   try {
     const { inviteCode } = req.body;
+
+    // The caller must not already be an active partner; a dangling pending
+    // invite of their own is dissolved below if this join succeeds.
+    const callerPartnership = await prisma.partnership.findFirst({
+      where: {
+        OR: [{ user1Id: req.user.id }, { user2Id: req.user.id }],
+        status: { in: ['pending', 'active'] }
+      }
+    });
+    if (callerPartnership?.status === 'active') {
+      return res.status(400).json({ success: false, message: 'You already have an active partnership' });
+    }
+
     const partnership = await prisma.partnership.findUnique({ where: { inviteCode } });
 
     if (!partnership || partnership.status !== 'pending') {
@@ -51,14 +77,33 @@ export const joinPartnership = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'You cannot join your own partnership' });
     }
 
-    const updated = await prisma.partnership.update({
-      where: { id: partnership.id },
-      data: {
-        user2Id: req.user.id,
-        status: 'active'
-      },
-      include: { user1: true, user2: true }
+    // Atomic claim: only succeeds while the partnership is still pending and
+    // unclaimed — prevents two concurrent joins both "winning" (last-write-wins
+    // would silently put two different users into the same partnership).
+    const claimed = await prisma.partnership.updateMany({
+      where: { id: partnership.id, status: 'pending', user2Id: null },
+      data: { user2Id: req.user.id, status: 'active' }
     });
+    if (claimed.count === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired invite code' });
+    }
+
+    // They chose to join someone else's partnership — drop their own pending
+    // invite so only one partnership remains and data goes to the right one.
+    if (callerPartnership?.status === 'pending') {
+      await prisma.partnership.update({
+        where: { id: callerPartnership.id },
+        data: { status: 'dissolved' }
+      });
+    }
+
+    const updated = await prisma.partnership.findUnique({
+      where: { id: partnership.id },
+      include: partnershipInclude
+    });
+    if (!updated) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired invite code' });
+    }
 
     // Create default prayer tasks for the partnership
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -98,7 +143,7 @@ export const getPartnership = async (req: AuthRequest, res: Response) => {
         OR: [{ user1Id: req.user.id }, { user2Id: req.user.id }],
         status: { in: ['pending', 'active'] }
       },
-      include: { user1: true, user2: true }
+      include: partnershipInclude
     });
     res.json({ success: true, data: { partnership } });
   } catch (error) {

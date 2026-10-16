@@ -9,7 +9,10 @@ const prisma = new PrismaClient();
 
 export const initSocket = (server: any) => {
   io = new SocketIOServer(server, {
-    cors: { origin: env.CORS_ORIGIN, methods: ['GET', 'POST'] }
+    cors: { origin: env.CORS_ORIGIN, methods: ['GET', 'POST'] },
+    // All client events carry tiny payloads (ids); a small cap prevents
+    // memory abuse via oversized messages.
+    maxHttpBufferSize: 10 * 1024
   });
 
   io.use(async (socket, next) => {
@@ -36,12 +39,19 @@ export const initSocket = (server: any) => {
   io.on('connection', (socket) => {
     console.log(`User connected: ${socket.data.userId} to room ${socket.data.partnershipId}`);
 
-    socket.on('join:partnership', (pId: string) => {
-      if (pId) {
-        socket.data.partnershipId = pId;
-        socket.join(pId);
-        console.log(`User ${socket.data.userId} joined room ${pId}`);
+    socket.on('join:partnership', async (pId: string) => {
+      if (!pId) return;
+
+      // Only allow joining the user's own active/pending partnership room
+      const activePartnershipId = await getActivePartnershipId(socket.data.userId);
+      if (!activePartnershipId || pId !== activePartnershipId) {
+        console.warn(`User ${socket.data.userId} attempted to join unauthorized room ${pId}`);
+        return;
       }
+
+      socket.data.partnershipId = pId;
+      socket.join(pId);
+      console.log(`User ${socket.data.userId} joined room ${pId}`);
     });
     
     socket.on('disconnect', () => {

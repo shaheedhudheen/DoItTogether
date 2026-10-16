@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 export const registerSchema = z.object({
   email: z.string().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
   displayName: z.string().min(1, 'Display name is required').max(50),
 });
 
@@ -17,7 +17,13 @@ export const loginSchema = z.object({
 
 export const updateProfileSchema = z.object({
   displayName: z.string().min(1).max(50).optional(),
-  avatarUrl: z.string().url().nullable().optional(),
+  // Only http(s) avatars — zod's .url() alone also accepts javascript: etc.
+  avatarUrl: z
+    .string()
+    .url('Invalid URL')
+    .refine((u) => /^https?:\/\//i.test(u), 'Avatar URL must be http(s)')
+    .nullable()
+    .optional(),
   prayerEnabled: z.boolean().optional(),
 });
 
@@ -68,18 +74,20 @@ export const updateDailyTaskSchema = z.object({
 // Todo Schemas
 // ============================================
 
+const isValidDateString = (s: string) => !Number.isNaN(Date.parse(s));
+
 export const createTodoSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
   description: z.string().max(1000).nullable().optional(),
   assignedToBoth: z.boolean().default(false),
-  dueDate: z.string().nullable().optional(),
+  dueDate: z.string().refine(isValidDateString, 'Invalid date').nullable().optional(),
 });
 
 export const updateTodoSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().max(1000).nullable().optional(),
   assignedToBoth: z.boolean().optional(),
-  dueDate: z.string().nullable().optional(),
+  dueDate: z.string().refine(isValidDateString, 'Invalid date').nullable().optional(),
 });
 
 // ============================================

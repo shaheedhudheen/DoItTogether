@@ -6,6 +6,12 @@ import { getIo } from '../../socket';
 
 const prisma = new PrismaClient();
 
+const PRAYER_NAMES = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const;
+
+const isValidPrayerName = (name: string): name is typeof PRAYER_NAMES[number] =>
+  (PRAYER_NAMES as readonly string[]).includes(name);
+
+
 const getOrCreatePrayerTask = async (partnershipId: string, name: string, sortOrder: number) => {
   let task = await prisma.prayerTask.findFirst({ where: { partnershipId, name } });
   if (!task) {
@@ -39,7 +45,11 @@ export const completePrayer = async (req: AuthRequest, res: Response) => {
     const pId = await getActivePartnershipId(req.user.id);
     if (!pId) return res.status(400).json(fail('No active partnership'));
 
-    const prayerNames = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+    if (!isValidPrayerName(req.params.name)) {
+      return res.status(400).json(fail('Invalid prayer name'));
+    }
+
+    const prayerNames = PRAYER_NAMES;
     const sortOrder = prayerNames.indexOf(req.params.name);
 
     const task = await getOrCreatePrayerTask(pId, req.params.name, sortOrder >= 0 ? sortOrder : 0);
@@ -85,6 +95,10 @@ export const uncompletePrayer = async (req: AuthRequest, res: Response) => {
   try {
     const pId = await getActivePartnershipId(req.user.id);
     if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    if (!isValidPrayerName(req.params.name)) {
+      return res.status(400).json(fail('Invalid prayer name'));
+    }
 
     const task = await prisma.prayerTask.findFirst({ where: { partnershipId: pId, name: req.params.name } });
     if (!task) return res.status(404).json(fail('Prayer not found'));

@@ -18,4 +18,8 @@ export const authApi = {
     const response = await apiClient.patch<ApiResponse<{ user: User }>>('/auth/profile', data);
     return response.data.data.user;
   },
+  logout: async () => {
+    // Revokes this device's refresh session server-side and clears the cookie.
+    await apiClient.post('/auth/logout');
+  },
 };

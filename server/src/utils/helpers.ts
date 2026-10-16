@@ -1,18 +1,40 @@
+import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
+// 32-char alphabet without 0/O/1/I confusion. Codes are generated with
+// crypto.randomInt → uniform, unpredictable (Math.random is NOT safe for
+// secrets: invite codes are the only thing protecting a pending partnership).
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 export const generateInviteCode = (): string => {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
+  }
+  return code;
 };
 
+/** SHA-256 of a token — used to store refresh tokens server-side without keeping the raw value. */
+export const sha256 = (value: string): string =>
+  crypto.createHash('sha256').update(value).digest('hex');
+
+/**
+ * Active partnership takes precedence over a dangling pending invite so
+ * data is never written into the wrong partnership.
+ */
 export const getActivePartnershipId = async (userId: string): Promise<string | null> => {
-  const p = await prisma.partnership.findFirst({
-    where: {
-      OR: [{ user1Id: userId }, { user2Id: userId }],
-      status: { in: ['active', 'pending'] }
-    }
+  const membership = {
+    OR: [{ user1Id: userId }, { user2Id: userId }]
+  };
+  const active = await prisma.partnership.findFirst({
+    where: { ...membership, status: 'active' }
   });
-  return p?.id || null;
+  if (active) return active.id;
+  const pending = await prisma.partnership.findFirst({
+    where: { ...membership, status: 'pending' }
+  });
+  return pending?.id || null;
 };
 
 export const getTodayUTC = (): Date => {

@@ -6,6 +6,13 @@ import { getIo } from '../../socket';
 
 const prisma = new PrismaClient();
 
+// Must be evaluated per request: getTodayUTC() changes at UTC midnight
+const todayCompletions = () => ({
+  completions: {
+    where: { completionDate: getTodayUTC() }
+  }
+});
+
 export const getDailyTasks = async (req: AuthRequest, res: Response) => {
   try {
     const pId = await getActivePartnershipId(req.user.id);
@@ -13,11 +20,7 @@ export const getDailyTasks = async (req: AuthRequest, res: Response) => {
 
     const tasks = await prisma.dailyTask.findMany({
       where: { partnershipId: pId, isActive: true },
-      include: {
-        completions: {
-          where: { completionDate: getTodayUTC() }
-        }
-      },
+      include: todayCompletions(),
       orderBy: { sortOrder: 'asc' }
     });
     res.json(ok({ tasks }));
@@ -33,6 +36,8 @@ export const createDailyTask = async (req: AuthRequest, res: Response) => {
 
     const count = await prisma.dailyTask.count({ where: { partnershipId: pId } });
     const { title, isShared, category } = req.body;
+    if (!title) return res.status(400).json(fail('Title is required'));
+
     const task = await prisma.dailyTask.create({
       data: {
         title,
@@ -42,11 +47,7 @@ export const createDailyTask = async (req: AuthRequest, res: Response) => {
         createdById: req.user.id,
         sortOrder: count
       },
-      include: {
-        completions: {
-          where: { completionDate: getTodayUTC() }
-        }
-      }
+      include: todayCompletions()
     });
     getIo().to(pId).emit('daily-task:created', task);
     res.json(ok({ task }));
@@ -57,14 +58,27 @@ export const createDailyTask = async (req: AuthRequest, res: Response) => {
 
 export const updateDailyTask = async (req: AuthRequest, res: Response) => {
   try {
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const existing = await prisma.dailyTask.findUnique({ where: { id: req.params.id } });
+    if (!existing || existing.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
+    // Whitelist updatable fields to prevent mass assignment (e.g. partnershipId/id)
+    const { title, category, isShared, isActive, sortOrder } = req.body;
+    const data: { title?: string; category?: string; isShared?: boolean; isActive?: boolean; sortOrder?: number } = {};
+    if (title !== undefined) data.title = title;
+    if (category !== undefined) data.category = category ?? '';
+    if (isShared !== undefined) data.isShared = isShared;
+    if (isActive !== undefined) data.isActive = isActive;
+    if (sortOrder !== undefined) data.sortOrder = sortOrder;
+
     const task = await prisma.dailyTask.update({
-      where: { id: req.params.id },
-      data: req.body,
-      include: {
-        completions: {
-          where: { completionDate: getTodayUTC() }
-        }
-      }
+      where: { id: existing.id },
+      data,
+      include: todayCompletions()
     });
     getIo().to(task.partnershipId).emit('daily-task:updated', task);
     res.json(ok({ task }));
@@ -75,10 +89,15 @@ export const updateDailyTask = async (req: AuthRequest, res: Response) => {
 
 export const deleteDailyTask = async (req: AuthRequest, res: Response) => {
   try {
-    const task = await prisma.dailyTask.findUnique({ where: { id: req.params.id } });
-    if (!task) return res.status(404).json(fail('Task not found'));
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
 
-    await prisma.dailyTask.delete({ where: { id: req.params.id } });
+    const task = await prisma.dailyTask.findUnique({ where: { id: req.params.id } });
+    if (!task || task.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
+    await prisma.dailyTask.delete({ where: { id: task.id } });
     getIo().to(task.partnershipId).emit('daily-task:deleted', task.id);
     res.json(ok(null));
   } catch (error) {
@@ -88,11 +107,19 @@ export const deleteDailyTask = async (req: AuthRequest, res: Response) => {
 
 export const completeDailyTask = async (req: AuthRequest, res: Response) => {
   try {
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const owned = await prisma.dailyTask.findUnique({ where: { id: req.params.id } });
+    if (!owned || owned.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
     const today = getTodayUTC();
     const existing = await prisma.dailyTaskCompletion.findUnique({
       where: {
         dailyTaskId_userId_completionDate: {
-          dailyTaskId: req.params.id,
+          dailyTaskId: owned.id,
           userId: req.user.id,
           completionDate: today
         }
@@ -102,7 +129,7 @@ export const completeDailyTask = async (req: AuthRequest, res: Response) => {
     if (!existing) {
       await prisma.dailyTaskCompletion.create({
         data: {
-          dailyTaskId: req.params.id,
+          dailyTaskId: owned.id,
           userId: req.user.id,
           completionDate: today
         }
@@ -110,12 +137,8 @@ export const completeDailyTask = async (req: AuthRequest, res: Response) => {
     }
 
     const task = await prisma.dailyTask.findUnique({
-      where: { id: req.params.id },
-      include: {
-        completions: {
-          where: { completionDate: today }
-        }
-      }
+      where: { id: owned.id },
+      include: todayCompletions()
     });
 
     if (task) {
@@ -129,22 +152,26 @@ export const completeDailyTask = async (req: AuthRequest, res: Response) => {
 
 export const uncompleteDailyTask = async (req: AuthRequest, res: Response) => {
   try {
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const owned = await prisma.dailyTask.findUnique({ where: { id: req.params.id } });
+    if (!owned || owned.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
     const today = getTodayUTC();
     await prisma.dailyTaskCompletion.deleteMany({
       where: {
-        dailyTaskId: req.params.id,
+        dailyTaskId: owned.id,
         userId: req.user.id,
         completionDate: today
       }
     });
 
     const task = await prisma.dailyTask.findUnique({
-      where: { id: req.params.id },
-      include: {
-        completions: {
-          where: { completionDate: today }
-        }
-      }
+      where: { id: owned.id },
+      include: todayCompletions()
     });
 
     if (task) {

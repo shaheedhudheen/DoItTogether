@@ -6,12 +6,24 @@ import { CalendarDayData, CalendarSummary, PrayerName } from '@dit/shared';
 
 const prisma = new PrismaClient();
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const isValidDateStr = (s: string): boolean => {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+};
+
 export const getCalendarDate = async (req: AuthRequest, res: Response) => {
   try {
     const pId = await getActivePartnershipId(req.user.id);
     if (!pId) return res.status(400).json(fail('No active partnership'));
 
     const dateStr = req.params.date; // Format: YYYY-MM-DD
+    if (!isValidDateStr(dateStr)) {
+      return res.status(400).json(fail('Invalid date (expected YYYY-MM-DD)'));
+    }
     const [y, m, d] = dateStr.split('-').map(Number);
     const targetDate = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
     const nextDay = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0));
@@ -140,6 +152,9 @@ export const getCalendarRange = async (req: AuthRequest, res: Response) => {
 
     if (!fromStr || !toStr) {
       return res.status(400).json(fail('from and to dates are required'));
+    }
+    if (!isValidDateStr(fromStr) || !isValidDateStr(toStr)) {
+      return res.status(400).json(fail('Invalid date (expected YYYY-MM-DD)'));
     }
 
     const [fy, fm, fd] = fromStr.split('-').map(Number);

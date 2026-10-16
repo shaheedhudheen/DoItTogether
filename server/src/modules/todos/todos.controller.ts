@@ -6,6 +6,27 @@ import { getIo } from '../../socket';
 
 const prisma = new PrismaClient();
 
+const todoInclude = {
+  completions: true,
+  createdBy: {
+    select: { id: true, displayName: true, avatarUrl: true }
+  }
+} as const;
+
+/**
+ * Loads a todo only if it belongs to the caller's active partnership.
+ * Returns null when it does not exist or belongs to someone else.
+ */
+const getOwnedTodo = async (todoId: string, userId: string) => {
+  const pId = await getActivePartnershipId(userId);
+  if (!pId) return { pId: null, todo: null };
+
+  const todo = await prisma.todo.findUnique({ where: { id: todoId } });
+  if (!todo || todo.partnershipId !== pId) return { pId, todo: null };
+
+  return { pId, todo };
+};
+
 const updateTodoStatus = async (todoId: string) => {
   const todo = await prisma.todo.findUnique({
     where: { id: todoId },
@@ -36,15 +57,13 @@ const updateTodoStatus = async (todoId: string) => {
     return await prisma.todo.update({
       where: { id: todoId },
       data: { status },
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      }
+      include: todoInclude
     });
   }
-  return todo;
+  return await prisma.todo.findUnique({
+    where: { id: todoId },
+    include: todoInclude
+  });
 };
 
 export const getTodos = async (req: AuthRequest, res: Response) => {
@@ -54,12 +73,7 @@ export const getTodos = async (req: AuthRequest, res: Response) => {
 
     const todos = await prisma.todo.findMany({
       where: { partnershipId: pId, status: { not: 'archived' } },
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      },
+      include: todoInclude,
       orderBy: { createdAt: 'desc' }
     });
     res.json(ok({ todos }));
@@ -74,24 +88,20 @@ export const createTodo = async (req: AuthRequest, res: Response) => {
     if (!pId) return res.status(400).json(fail('No active partnership'));
 
     const { title, description, assignedToBoth, dueDate } = req.body;
+    if (!title) return res.status(400).json(fail('Title is required'));
     const parsedDueDate = dueDate ? new Date(dueDate) : null;
 
     const todo = await prisma.todo.create({
       data: {
         title,
-        description,
+        description: description ?? null,
         assignedToBoth: assignedToBoth ?? false,
         dueDate: parsedDueDate,
         partnershipId: pId,
         createdById: req.user.id,
         status: 'pending'
       },
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      }
+      include: todoInclude
     });
     getIo().to(pId).emit('todo:created', todo);
     res.json(ok({ todo }));
@@ -102,7 +112,7 @@ export const createTodo = async (req: AuthRequest, res: Response) => {
 
 export const updateTodo = async (req: AuthRequest, res: Response) => {
   try {
-    const existing = await prisma.todo.findUnique({ where: { id: req.params.id } });
+    const { todo: existing } = await getOwnedTodo(req.params.id, req.user.id);
     if (!existing) return res.status(404).json(fail('Todo not found'));
 
     // If task is not assigned to both, only creator can edit it
@@ -118,14 +128,9 @@ export const updateTodo = async (req: AuthRequest, res: Response) => {
     if (dueDate !== undefined) dataToUpdate.dueDate = dueDate ? new Date(dueDate) : null;
 
     let todo = await prisma.todo.update({
-      where: { id: req.params.id },
+      where: { id: existing.id },
       data: dataToUpdate,
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      }
+      include: todoInclude
     });
     const updated = await updateTodoStatus(todo.id);
     if (updated) todo = updated as any;
@@ -139,7 +144,7 @@ export const updateTodo = async (req: AuthRequest, res: Response) => {
 
 export const deleteTodo = async (req: AuthRequest, res: Response) => {
   try {
-    const existing = await prisma.todo.findUnique({ where: { id: req.params.id } });
+    const { todo: existing } = await getOwnedTodo(req.params.id, req.user.id);
     if (!existing) return res.status(404).json(fail('Todo not found'));
 
     // If task is not assigned to both, only creator can delete it
@@ -147,7 +152,7 @@ export const deleteTodo = async (req: AuthRequest, res: Response) => {
       return res.status(403).json(fail('Only the creator can delete this personal task'));
     }
 
-    const todo = await prisma.todo.delete({ where: { id: req.params.id } });
+    const todo = await prisma.todo.delete({ where: { id: existing.id } });
     getIo().to(todo.partnershipId).emit('todo:deleted', todo.id);
     res.json(ok(null));
   } catch (error) {
@@ -157,7 +162,7 @@ export const deleteTodo = async (req: AuthRequest, res: Response) => {
 
 export const completeTodo = async (req: AuthRequest, res: Response) => {
   try {
-    const todo = await prisma.todo.findUnique({ where: { id: req.params.id } });
+    const { todo } = await getOwnedTodo(req.params.id, req.user.id);
     if (!todo) return res.status(404).json(fail('Todo not found'));
 
     // Rule enforcement:
@@ -169,7 +174,7 @@ export const completeTodo = async (req: AuthRequest, res: Response) => {
     const existing = await prisma.todoCompletion.findUnique({
       where: {
         todoId_userId: {
-          todoId: req.params.id,
+          todoId: todo.id,
           userId: req.user.id
         }
       }
@@ -177,19 +182,14 @@ export const completeTodo = async (req: AuthRequest, res: Response) => {
 
     if (!existing) {
       await prisma.todoCompletion.create({
-        data: { todoId: req.params.id, userId: req.user.id }
+        data: { todoId: todo.id, userId: req.user.id }
       });
     }
 
-    await updateTodoStatus(req.params.id);
+    await updateTodoStatus(todo.id);
     const updatedTodo = await prisma.todo.findUnique({
-      where: { id: req.params.id },
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      }
+      where: { id: todo.id },
+      include: todoInclude
     });
 
     if (updatedTodo) {
@@ -203,7 +203,7 @@ export const completeTodo = async (req: AuthRequest, res: Response) => {
 
 export const uncompleteTodo = async (req: AuthRequest, res: Response) => {
   try {
-    const todo = await prisma.todo.findUnique({ where: { id: req.params.id } });
+    const { todo } = await getOwnedTodo(req.params.id, req.user.id);
     if (!todo) return res.status(404).json(fail('Todo not found'));
 
     // Rule enforcement:
@@ -213,17 +213,12 @@ export const uncompleteTodo = async (req: AuthRequest, res: Response) => {
     }
 
     await prisma.todoCompletion.deleteMany({
-      where: { todoId: req.params.id, userId: req.user.id }
+      where: { todoId: todo.id, userId: req.user.id }
     });
-    await updateTodoStatus(req.params.id);
+    await updateTodoStatus(todo.id);
     const updatedTodo = await prisma.todo.findUnique({
-      where: { id: req.params.id },
-      include: {
-        completions: true,
-        createdBy: {
-          select: { id: true, displayName: true, avatarUrl: true }
-        }
-      }
+      where: { id: todo.id },
+      include: todoInclude
     });
 
     if (updatedTodo) {

@@ -210,7 +210,9 @@ export interface ApiError {
 
 export interface AuthTokens {
   accessToken: string;
-  refreshToken: string;
+  /** Delivered via httpOnly cookie, not the response body — present only for
+   *  legacy clients. */
+  refreshToken?: string;
 }
 
 export interface LoginResponse {

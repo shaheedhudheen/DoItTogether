@@ -14,6 +14,9 @@ model User {
   displayName      String
   avatarUrl        String?
   prayerEnabled    Boolean  @default(false)
+  // SHA-256 hashes of currently-valid refresh tokens (one per logged-in
+  // device, capped). Server-side revocation + rotation-reuse detection.
+  refreshTokenHashes String[] @default([])
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

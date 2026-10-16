@@ -6,7 +6,15 @@ import toast from 'react-hot-toast';
 
 export const useAuth = () => {
   const queryClient = useQueryClient();
-  const { setAuth, logout, user, isAuthenticated } = useAuthStore();
+  const { setAuth, logout: storeLogout, user, isAuthenticated } = useAuthStore();
+
+  // Best-effort server-side revocation of the refresh session, then clear
+  // local state. (The interceptor's failure-path logout intentionally skips
+  // this — the server already rejected the session.)
+  const logout = () => {
+    authApi.logout().catch(() => {});
+    storeLogout();
+  };
 
   const login = useMutation({
     mutationFn: (data: LoginInput) => authApi.login(data),

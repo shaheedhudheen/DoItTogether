@@ -26,8 +26,18 @@ export const createCommonTask = async (req: AuthRequest, res: Response) => {
     const pId = await getActivePartnershipId(req.user.id);
     if (!pId) return res.status(400).json(fail('No active partnership'));
 
+    const { title, description, emoji } = req.body;
+    if (!title) return res.status(400).json(fail('Title is required'));
+
     const task = await prisma.commonTask.create({
-      data: { ...req.body, partnershipId: pId, createdById: req.user.id, status: 'active' }
+      data: {
+        title,
+        description: description ?? null,
+        emoji: emoji || '📋',
+        partnershipId: pId,
+        createdById: req.user.id,
+        status: 'active'
+      }
     });
     getIo().to(pId).emit('common-task:created', task);
     res.json(ok({ task }));
@@ -38,10 +48,27 @@ export const createCommonTask = async (req: AuthRequest, res: Response) => {
 
 export const updateCommonTask = async (req: AuthRequest, res: Response) => {
   try {
-    const task = await prisma.commonTask.update({
-      where: { id: req.params.id },
-      data: req.body
-    });
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const existing = await prisma.commonTask.findUnique({ where: { id: req.params.id } });
+    if (!existing || existing.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
+    // Whitelist updatable fields to prevent mass assignment
+    const { title, description, emoji, status } = req.body;
+    const data: { title?: string; description?: string | null; emoji?: string; status?: string; completedAt?: Date | null } = {};
+    if (title !== undefined) data.title = title;
+    if (description !== undefined) data.description = description;
+    if (emoji !== undefined) data.emoji = emoji;
+    if (status !== undefined) {
+      data.status = status;
+      if (status === 'completed' && existing.status !== 'completed') data.completedAt = new Date();
+      if (status !== 'completed') data.completedAt = null;
+    }
+
+    const task = await prisma.commonTask.update({ where: { id: existing.id }, data });
     getIo().to(task.partnershipId).emit('common-task:updated', task);
     res.json(ok({ task }));
   } catch (error) {
@@ -51,7 +78,15 @@ export const updateCommonTask = async (req: AuthRequest, res: Response) => {
 
 export const deleteCommonTask = async (req: AuthRequest, res: Response) => {
   try {
-    const task = await prisma.commonTask.delete({ where: { id: req.params.id } });
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const task = await prisma.commonTask.findUnique({ where: { id: req.params.id } });
+    if (!task || task.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
+    await prisma.commonTask.delete({ where: { id: task.id } });
     getIo().to(task.partnershipId).emit('common-task:deleted', task.id);
     res.json(ok(null));
   } catch (error) {
@@ -61,8 +96,16 @@ export const deleteCommonTask = async (req: AuthRequest, res: Response) => {
 
 export const completeCommonTask = async (req: AuthRequest, res: Response) => {
   try {
+    const pId = await getActivePartnershipId(req.user.id);
+    if (!pId) return res.status(400).json(fail('No active partnership'));
+
+    const existing = await prisma.commonTask.findUnique({ where: { id: req.params.id } });
+    if (!existing || existing.partnershipId !== pId) {
+      return res.status(404).json(fail('Task not found'));
+    }
+
     const task = await prisma.commonTask.update({
-      where: { id: req.params.id },
+      where: { id: existing.id },
       data: { status: 'completed', completedAt: new Date() }
     });
     getIo().to(task.partnershipId).emit('common-task:updated', task);
