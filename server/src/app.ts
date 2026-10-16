@@ -23,6 +23,10 @@ app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json());
 
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/partnership', partnershipRoutes);
 app.use('/api/common-tasks', commonTasksRoutes);
