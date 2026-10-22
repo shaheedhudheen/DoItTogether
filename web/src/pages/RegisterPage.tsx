@@ -44,7 +44,7 @@ export default function RegisterPage() {
         <Input 
           label="Password" 
           type="password" 
-          placeholder="At least 6 characters"
+          placeholder="At least 8 characters"
           {...register('password')}
           error={errors.password?.message}
         />

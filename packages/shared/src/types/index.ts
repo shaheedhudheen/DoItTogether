@@ -32,6 +32,8 @@ export interface Partnership {
   user2Id: string | null;
   inviteCode: string;
   status: PartnershipStatus;
+  /** Room-level setting chosen by the creator during onboarding. */
+  prayerEnabled: boolean;
   createdAt: string;
   user1?: UserPublic;
   user2?: UserPublic | null;

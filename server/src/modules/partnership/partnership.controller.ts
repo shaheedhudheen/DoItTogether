@@ -2,6 +2,11 @@ import { Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthRequest } from '../../middleware/auth';
 import { generateInviteCode } from '../../utils/helpers';
+import {
+  ensurePrayerTasks,
+  findCurrentPartnership,
+  setPartnershipPrayerEnabled
+} from '../../utils/partnership';
 import { getIo } from '../../socket';
 
 const prisma = new PrismaClient();
@@ -33,6 +38,9 @@ export const generateInvite = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'You already have an active partnership' });
     }
     if (existing && existing.status === 'pending') {
+      if (existing.prayerEnabled) {
+        await ensurePrayerTasks(existing.id);
+      }
       return res.json({ success: true, data: { code: existing.inviteCode, partnership: existing } });
     }
 
@@ -41,10 +49,16 @@ export const generateInvite = async (req: AuthRequest, res: Response) => {
       data: {
         user1Id: req.user.id,
         inviteCode,
-        status: 'pending'
+        status: 'pending',
+        // The room starts with the creator's current preference; the
+        // creator can still change it on the onboarding prayer step.
+        prayerEnabled: req.user.prayerEnabled
       },
       include: partnershipInclude
     });
+    if (created.prayerEnabled) {
+      await ensurePrayerTasks(created.id);
+    }
     res.json({ success: true, data: { code: inviteCode, partnership: created } });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -88,6 +102,16 @@ export const joinPartnership = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired invite code' });
     }
 
+    // The joining partner inherits the room creator's prayer choice — they
+    // are never asked again during onboarding. This also covers rooms created
+    // before the room-level setting existed (fallback to creator's preference).
+    const creator = await prisma.user.findUnique({
+      where: { id: partnership.user1Id },
+      select: { prayerEnabled: true }
+    });
+    const inheritedPrayerSetting = partnership.prayerEnabled || creator?.prayerEnabled || false;
+    await setPartnershipPrayerEnabled(partnership.id, inheritedPrayerSetting);
+
     // They chose to join someone else's partnership — drop their own pending
     // invite so only one partnership remains and data goes to the right one.
     if (callerPartnership?.status === 'pending') {
@@ -105,24 +129,6 @@ export const joinPartnership = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired invite code' });
     }
 
-    // Create default prayer tasks for the partnership
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    const partner = await prisma.user.findUnique({ where: { id: partnership.user1Id } });
-
-    if (user?.prayerEnabled || partner?.prayerEnabled) {
-      const existingCount = await prisma.prayerTask.count({ where: { partnershipId: updated.id } });
-      if (existingCount === 0) {
-        const prayerNames = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
-        await prisma.prayerTask.createMany({
-          data: prayerNames.map((name, index) => ({
-            partnershipId: updated.id,
-            name,
-            sortOrder: index
-          }))
-        });
-      }
-    }
-
     // Notify the partner via socket
     getIo().to(updated.id).emit('partnership:joined', { partnership: updated });
     getIo().to(updated.user1Id).emit('partnership:joined', { partnership: updated });
@@ -138,13 +144,44 @@ export const joinPartnership = async (req: AuthRequest, res: Response) => {
 
 export const getPartnership = async (req: AuthRequest, res: Response) => {
   try {
-    const partnership = await prisma.partnership.findFirst({
-      where: {
-        OR: [{ user1Id: req.user.id }, { user2Id: req.user.id }],
-        status: { in: ['pending', 'active'] }
-      },
+    const current = await findCurrentPartnership(req.user.id);
+    const partnership = current
+      ? await prisma.partnership.findUnique({
+          where: { id: current.id },
+          include: partnershipInclude
+        })
+      : null;
+    res.json({ success: true, data: { partnership } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+export const updatePartnershipSettings = async (req: AuthRequest, res: Response) => {
+  try {
+    const { prayerEnabled } = req.body;
+    const current = await findCurrentPartnership(req.user.id);
+    if (!current) {
+      return res.status(404).json({ success: false, message: 'Partnership not found' });
+    }
+
+    await setPartnershipPrayerEnabled(current.id, prayerEnabled);
+
+    const partnership = await prisma.partnership.findUnique({
+      where: { id: current.id },
       include: partnershipInclude
     });
+    if (!partnership) {
+      return res.status(404).json({ success: false, message: 'Partnership not found' });
+    }
+
+    // Keep both partners' dashboards in sync in real time.
+    getIo().to(partnership.id).emit('partnership:settings', { partnership });
+    getIo().to(partnership.user1Id).emit('partnership:settings', { partnership });
+    if (partnership.user2Id) {
+      getIo().to(partnership.user2Id).emit('partnership:settings', { partnership });
+    }
+
     res.json({ success: true, data: { partnership } });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });

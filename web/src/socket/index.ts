@@ -45,28 +45,56 @@ export const initSocket = (token: string, partnershipId?: string) => {
   // Map server events to React Query invalidation keys
   // These event names match server/src/socket/index.ts and controller emissions
   const eventsToInvalidate: Record<string, string[]> = {
-    'common-task:created': ['commonTasks'],
-    'common-task:updated': ['commonTasks'],
-    'common-task:deleted': ['commonTasks'],
-    'daily-task:completed': ['dailyTasks'],
-    'daily-task:uncompleted': ['dailyTasks'],
-    'prayer:completed': ['prayers'],
-    'prayer:uncompleted': ['prayers'],
-    'todo:created': ['todos'],
-    'todo:updated': ['todos'],
-    'todo:deleted': ['todos'],
-    'todo:completed': ['todos'],
-    'todo:uncompleted': ['todos'],
-    'partnership:joined': ['partnership', 'me'],
+    'common-task:created': ['commonTasks', 'calendar'],
+    'common-task:updated': ['commonTasks', 'calendar'],
+    'common-task:deleted': ['commonTasks', 'calendar'],
+    'daily-task:created': ['dailyTasks', 'calendar'],
+    'daily-task:updated': ['dailyTasks', 'calendar'],
+    'daily-task:deleted': ['dailyTasks', 'calendar'],
+    'daily-task:completed': ['dailyTasks', 'calendar'],
+    'daily-task:uncompleted': ['dailyTasks', 'calendar'],
+    'prayer:completed': ['prayers', 'calendar'],
+    'prayer:uncompleted': ['prayers', 'calendar'],
+    'todo:created': ['todos', 'calendar'],
+    'todo:updated': ['todos', 'calendar'],
+    'todo:deleted': ['todos', 'calendar'],
+    'todo:completed': ['todos', 'calendar'],
+    'todo:uncompleted': ['todos', 'calendar'],
+    'partnership:joined': ['partnership', 'me', 'prayers'],
+    'partnership:settings': ['partnership', 'me', 'prayers', 'calendar'],
     'partnership:dissolved': ['partnership', 'me'],
   };
 
   Object.entries(eventsToInvalidate).forEach(([event, queryKeys]) => {
     socket?.on(event, (payload?: any) => {
       if (event === 'partnership:joined' && payload?.partnership?.id) {
-        useAuthStore.getState().updateUser({ partnershipId: payload.partnership.id });
+        const updates: { partnershipId: string; prayerEnabled?: boolean } = {
+          partnershipId: payload.partnership.id
+        };
+        if (typeof payload.partnership.prayerEnabled === 'boolean') {
+          updates.prayerEnabled = payload.partnership.prayerEnabled;
+        }
+        useAuthStore.getState().updateUser(updates);
         socket?.emit('join:partnership', payload.partnership.id);
       }
+
+      if (event === 'partnership:settings') {
+        if (typeof payload?.partnership?.prayerEnabled === 'boolean') {
+          useAuthStore.getState().updateUser({
+            prayerEnabled: payload.partnership.prayerEnabled
+          });
+        }
+      }
+
+      if (event === 'partnership:dissolved') {
+        // Drop the room reference immediately so protected pages redirect,
+        // then wipe every cached query from the old room — a partner who
+        // later joins a different room must never see the old shared data.
+        useAuthStore.getState().updateUser({ partnershipId: null, prayerEnabled: false });
+        queryClientInstance?.removeQueries();
+        return;
+      }
+
       if (queryClientInstance) {
         queryKeys.forEach((key) => {
           queryClientInstance?.invalidateQueries({ queryKey: [key] });

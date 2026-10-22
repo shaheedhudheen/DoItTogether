@@ -35,6 +35,12 @@ export const joinPartnershipSchema = z.object({
   inviteCode: z.string().min(1, 'Invite code is required'),
 });
 
+// Room-wide preferences. Both partners share the same prayer tracker state,
+// so the joining partner inherits the creator's onboarding choice.
+export const updatePartnershipSettingsSchema = z.object({
+  prayerEnabled: z.boolean(),
+});
+
 // ============================================
 // Common Task Schemas
 // ============================================
@@ -98,6 +104,7 @@ export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type JoinPartnershipInput = z.infer<typeof joinPartnershipSchema>;
+export type UpdatePartnershipSettingsInput = z.infer<typeof updatePartnershipSettingsSchema>;
 export type CreateCommonTaskInput = z.infer<typeof createCommonTaskSchema>;
 export type UpdateCommonTaskInput = z.infer<typeof updateCommonTaskSchema>;
 export type CreateDailyTaskInput = z.infer<typeof createDailyTaskSchema>;

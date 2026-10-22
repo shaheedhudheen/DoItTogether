@@ -163,33 +163,51 @@ export const getCalendarRange = async (req: AuthRequest, res: Response) => {
     const [ty, tm, td] = toStr.split('-').map(Number);
     const toDate = new Date(Date.UTC(ty, tm - 1, td + 1, 0, 0, 0));
 
-    const dailyTaskCount = await prisma.dailyTask.count({
-      where: { partnershipId: pId, isActive: true }
-    });
+    if (fromDate >= toDate) {
+      return res.status(400).json(fail('from must be on or before to'));
+    }
+    // Bound the work a single request can trigger (the UI only needs a month).
+    if (toDate.getTime() - fromDate.getTime() > 366 * 24 * 60 * 60 * 1000) {
+      return res.status(400).json(fail('Date range is too large (max 366 days)'));
+    }
 
-    const prayerCount = await prisma.prayerTask.count({
-      where: { partnershipId: pId }
-    });
+    const [dailyTasks, prayerTasks, partnership, dailyCompletions, prayerCompletions] =
+      await Promise.all([
+        prisma.dailyTask.findMany({
+          where: { partnershipId: pId, isActive: true },
+          select: { id: true, isShared: true, createdById: true }
+        }),
+        prisma.prayerTask.findMany({
+          where: { partnershipId: pId },
+          select: { id: true }
+        }),
+        prisma.partnership.findUnique({
+          where: { id: pId },
+          select: { user1Id: true, user2Id: true }
+        }),
+        prisma.dailyTaskCompletion.findMany({
+          where: {
+            dailyTask: { partnershipId: pId },
+            completionDate: {
+              gte: fromDate,
+              lt: toDate
+            }
+          }
+        }),
+        prisma.prayerCompletion.findMany({
+          where: {
+            prayerTask: { partnershipId: pId },
+            completionDate: {
+              gte: fromDate,
+              lt: toDate
+            }
+          }
+        })
+      ]);
 
-    const dailyCompletions = await prisma.dailyTaskCompletion.findMany({
-      where: {
-        dailyTask: { partnershipId: pId },
-        completionDate: {
-          gte: fromDate,
-          lt: toDate
-        }
-      }
-    });
-
-    const prayerCompletions = await prisma.prayerCompletion.findMany({
-      where: {
-        prayerTask: { partnershipId: pId },
-        completionDate: {
-          gte: fromDate,
-          lt: toDate
-        }
-      }
-    });
+    const memberIds = [partnership?.user1Id, partnership?.user2Id].filter(
+      (id): id is string => !!id
+    );
 
     const commonTasks = await prisma.commonTask.findMany({
       where: {
@@ -217,9 +235,9 @@ export const getCalendarRange = async (req: AuthRequest, res: Response) => {
       if (!summary[d]) {
         summary[d] = {
           date: d,
-          totalDailyTasks: dailyTaskCount,
+          totalDailyTasks: dailyTasks.length,
           completedDailyTasks: 0,
-          totalPrayers: prayerCount,
+          totalPrayers: prayerTasks.length,
           completedPrayers: 0,
           totalCommonTasks: 0,
           completedCommonTasks: 0
@@ -228,16 +246,45 @@ export const getCalendarRange = async (req: AuthRequest, res: Response) => {
       return summary[d];
     };
 
-    // Group daily completions by YYYY-MM-DD
+    // Group daily completions by date + task, then count only routines that
+    // are fully done for that day: shared routines need both partners, and
+    // personal routines count once checked by anyone. (Incrementing per
+    // completion made summaries exceed 100% and "all done" dots unreachable.)
+    const dailyByTaskDate = new Map<string, Set<string>>();
     dailyCompletions.forEach(c => {
       const d = c.completionDate.toISOString().split('T')[0];
-      getSummaryEntry(d).completedDailyTasks++;
+      const key = `${d}|${c.dailyTaskId}`;
+      const users = dailyByTaskDate.get(key) ?? new Set<string>();
+      users.add(c.userId);
+      dailyByTaskDate.set(key, users);
+    });
+    const dailyTaskById = new Map(dailyTasks.map(task => [task.id, task]));
+    dailyByTaskDate.forEach((users, key) => {
+      const [d, taskId] = key.split('|');
+      const task = dailyTaskById.get(taskId);
+      if (!task) return;
+
+      const fullyDone = task.isShared
+        ? memberIds.every(id => users.has(id))
+        : users.size > 0;
+      if (fullyDone) getSummaryEntry(d).completedDailyTasks++;
     });
 
-    // Group prayer completions by YYYY-MM-DD
+    // Same rule for prayers: count a prayer once, only when everyone in the
+    // room has completed it that day.
+    const prayerByTaskDate = new Map<string, Set<string>>();
     prayerCompletions.forEach(c => {
       const d = c.completionDate.toISOString().split('T')[0];
-      getSummaryEntry(d).completedPrayers++;
+      const key = `${d}|${c.prayerTaskId}`;
+      const users = prayerByTaskDate.get(key) ?? new Set<string>();
+      users.add(c.userId);
+      prayerByTaskDate.set(key, users);
+    });
+    prayerByTaskDate.forEach((users, key) => {
+      const d = key.split('|')[0];
+      if (memberIds.length > 0 && memberIds.every(id => users.has(id))) {
+        getSummaryEntry(d).completedPrayers++;
+      }
     });
 
     // Group common tasks by created / completed dates
@@ -247,7 +294,13 @@ export const getCalendarRange = async (req: AuthRequest, res: Response) => {
 
       if (t.completedAt) {
         const completedDateStr = t.completedAt.toISOString().split('T')[0];
-        getSummaryEntry(completedDateStr).completedCommonTasks++;
+        const completedEntry = getSummaryEntry(completedDateStr);
+        completedEntry.completedCommonTasks++;
+        // A task created earlier and completed on this date has no "created"
+        // count here; make the completion visible (and green) on its own day.
+        if (completedEntry.completedCommonTasks > completedEntry.totalCommonTasks) {
+          completedEntry.totalCommonTasks = completedEntry.completedCommonTasks;
+        }
       }
     });
 

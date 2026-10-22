@@ -13,6 +13,23 @@ const todoInclude = {
   }
 } as const;
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * "YYYY-MM-DD" is a whole calendar day, so it expires at the END of that day
+ * (23:59:59.999 UTC), not at midnight at its start. Without this a task due
+ * today was immediately marked expired.
+ */
+const parseDueDate = (value: string | null | undefined): Date | null => {
+  if (!value) return null;
+  if (DATE_ONLY_RE.test(value)) {
+    const [y, m, d] = value.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 /**
  * Loads a todo only if it belongs to the caller's active partnership.
  * Returns null when it does not exist or belongs to someone else.
@@ -71,11 +88,20 @@ export const getTodos = async (req: AuthRequest, res: Response) => {
     const pId = await getActivePartnershipId(req.user.id);
     if (!pId) return res.status(400).json(fail('No active partnership'));
 
-    const todos = await prisma.todo.findMany({
+    const rows = await prisma.todo.findMany({
       where: { partnershipId: pId, status: { not: 'archived' } },
       include: todoInclude,
       orderBy: { createdAt: 'desc' }
     });
+
+    // Expiry is time-based; compute it on read too so a task that passed its
+    // due date doesn't keep reporting "pending" until someone edits it.
+    const now = Date.now();
+    const todos = rows.map(todo =>
+      todo.status !== 'completed' && todo.dueDate && todo.dueDate.getTime() < now
+        ? { ...todo, status: 'expired' }
+        : todo
+    );
     res.json(ok({ todos }));
   } catch (error) {
     res.status(500).json(fail('Server error'));
@@ -89,7 +115,7 @@ export const createTodo = async (req: AuthRequest, res: Response) => {
 
     const { title, description, assignedToBoth, dueDate } = req.body;
     if (!title) return res.status(400).json(fail('Title is required'));
-    const parsedDueDate = dueDate ? new Date(dueDate) : null;
+    const parsedDueDate = parseDueDate(dueDate);
 
     const todo = await prisma.todo.create({
       data: {
@@ -125,7 +151,7 @@ export const updateTodo = async (req: AuthRequest, res: Response) => {
     if (title !== undefined) dataToUpdate.title = title;
     if (description !== undefined) dataToUpdate.description = description;
     if (assignedToBoth !== undefined) dataToUpdate.assignedToBoth = assignedToBoth;
-    if (dueDate !== undefined) dataToUpdate.dueDate = dueDate ? new Date(dueDate) : null;
+    if (dueDate !== undefined) dataToUpdate.dueDate = parseDueDate(dueDate);
 
     let todo = await prisma.todo.update({
       where: { id: existing.id },

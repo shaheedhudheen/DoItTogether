@@ -7,11 +7,13 @@ import { getInitials } from '../utils/helpers';
 import toast from 'react-hot-toast';
 
 export default function ProfilePage() {
-  const { user, logout, updateProfile } = useAuth();
-  const { partnership, partner, leave } = usePartnership();
+  const { user, logout } = useAuth();
+  const { partnership, partner, leave, updateSettings } = usePartnership();
+  const prayerEnabled = partnership?.prayerEnabled ?? user?.prayerEnabled ?? false;
 
   const handleTogglePrayer = () => {
-    updateProfile.mutate({ prayerEnabled: !user?.prayerEnabled });
+    // Prayer tracking is shared room state; toggling updates both partners.
+    updateSettings.mutate({ prayerEnabled: !prayerEnabled });
   };
 
   const handleDissolve = () => {
@@ -99,10 +101,10 @@ export default function ProfilePage() {
               </div>
               <button
                 onClick={handleTogglePrayer}
-                disabled={updateProfile.isPending}
-                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 ${user?.prayerEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                disabled={updateSettings.isPending}
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 ${prayerEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
               >
-                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${user?.prayerEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${prayerEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
               </button>
             </div>
           </Card>

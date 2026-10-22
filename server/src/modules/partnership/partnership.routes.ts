@@ -2,8 +2,14 @@ import { Router } from 'express';
 import { authenticate, AuthRequest } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { rateLimit } from '../../middleware/rateLimit';
-import { joinPartnershipSchema } from '@dit/shared';
-import { generateInvite, joinPartnership, getPartnership, dissolvePartnership } from './partnership.controller';
+import { joinPartnershipSchema, updatePartnershipSettingsSchema } from '@dit/shared';
+import {
+  generateInvite,
+  joinPartnership,
+  getPartnership,
+  dissolvePartnership,
+  updatePartnershipSettings
+} from './partnership.controller';
 
 const router = Router();
 
@@ -19,6 +25,7 @@ const joinLimiter = rateLimit({
 router.use(authenticate);
 router.post('/invite', generateInvite);
 router.post('/join', joinLimiter, validate(joinPartnershipSchema), joinPartnership);
+router.patch('/settings', validate(updatePartnershipSettingsSchema), updatePartnershipSettings);
 router.get('/', getPartnership);
 router.delete('/', dissolvePartnership);
 

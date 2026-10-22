@@ -11,7 +11,7 @@ import toast from 'react-hot-toast';
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const { updateProfile } = useAuth();
-  const { partnership, invite, join } = usePartnership();
+  const { partnership, invite, join, updateSettings } = usePartnership();
   
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
@@ -21,6 +21,10 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (partnership?.inviteCode && !inviteCode) {
       setInviteCode(partnership.inviteCode);
+    }
+    if (partnership) {
+      // Keep the toggle reflecting the room setting if this page is reopened.
+      setPrayerEnabled(partnership.prayerEnabled);
     }
   }, [partnership, inviteCode]);
 
@@ -42,7 +46,9 @@ export default function OnboardingPage() {
     if (!joinCode.trim()) return;
     try {
       await join.mutateAsync({ inviteCode: joinCode.trim().toUpperCase() });
-      setStep(2);
+      // The room creator already chose whether prayer tracking is enabled.
+      // The joining partner inherits it and is not asked again.
+      setStep(3);
     } catch {
       // Error handled by hook
     }
@@ -55,12 +61,22 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleFinish = async () => {
+  const handlePrayerContinue = async () => {
     try {
-      await updateProfile.mutateAsync({ prayerEnabled });
+      if (partnership) {
+        // Room-wide setting: persists immediately and mirrors to the partner
+        // (who may join later or may already be connected).
+        await updateSettings.mutateAsync({ prayerEnabled });
+      } else {
+        await updateProfile.mutateAsync({ prayerEnabled });
+      }
+      setStep(3);
     } catch {
-      // Proceed even if non-critical error
+      // Error handled by hook; stay on this step so the choice isn't lost.
     }
+  };
+
+  const handleFinish = () => {
     navigate('/');
   };
 
@@ -177,7 +193,11 @@ export default function OnboardingPage() {
                 </button>
               </div>
 
-              <Button className="w-full" onClick={() => setStep(3)}>
+              <Button
+                className="w-full"
+                onClick={handlePrayerContinue}
+                isLoading={updateSettings.isPending}
+              >
                 Continue
               </Button>
             </div>
@@ -192,8 +212,13 @@ export default function OnboardingPage() {
               <p className="text-slate-500 text-sm">
                 Your partnership is linked and your account is ready to go. Let's start doing it together!
               </p>
+              {partnership?.prayerEnabled && (
+                <p className="text-emerald-600 text-xs font-medium">
+                  Prayer tracking is enabled for this room.
+                </p>
+              )}
 
-              <Button className="w-full mt-6" onClick={handleFinish} isLoading={updateProfile.isPending}>
+              <Button className="w-full mt-6" onClick={handleFinish}>
                 Go to Dashboard
               </Button>
             </div>

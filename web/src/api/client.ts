@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { useAuthStore } from '../store/authStore';
+import { queryClient } from '../lib/queryClient';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -60,6 +61,9 @@ const requestNewAccessToken = async (): Promise<string | null> => {
       }
     }
     useAuthStore.getState().logout();
+    // Don't keep the previous session's personal data in memory after a
+    // forced logout (expired/revoked refresh session).
+    queryClient.clear();
     return null;
   }
 };

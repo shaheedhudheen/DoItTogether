@@ -20,20 +20,20 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       refreshToken: null,
       isAuthenticated: false,
-      setAuth: (user, token, refreshToken = null) => 
-        set((state) => ({ 
-          user, 
-          token, 
-          refreshToken: refreshToken ?? state.refreshToken, 
-          isAuthenticated: true 
-        })),
-      setTokens: (token, refreshToken = null) => 
-        set((state) => ({ 
-          token, 
-          refreshToken: refreshToken ?? state.refreshToken 
-        })),
-      updateUser: (updates) => set((state) => ({ 
-        user: state.user ? { ...state.user, ...updates } : null 
+      setAuth: (user, token, refreshToken = null) =>
+        set({
+          user,
+          token,
+          refreshToken,
+          isAuthenticated: true
+        }),
+      setTokens: (token, refreshToken = null) =>
+        set({
+          token,
+          refreshToken
+        }),
+      updateUser: (updates) => set((state) => ({
+        user: state.user ? { ...state.user, ...updates } : null
       })),
       logout: () => set({ user: null, token: null, refreshToken: null, isAuthenticated: false }),
     }),

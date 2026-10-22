@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authApi } from '../api/auth';
 import { useAuthStore } from '../store/authStore';
-import { LoginInput, RegisterInput, UpdateProfileInput } from '@dit/shared';
+import { LoginInput, RegisterInput, UpdateProfileInput, User } from '@dit/shared';
 import toast from 'react-hot-toast';
 
 export const useAuth = () => {
@@ -14,11 +14,23 @@ export const useAuth = () => {
   const logout = () => {
     authApi.logout().catch(() => {});
     storeLogout();
+    // Drop every cached query from the previous account. Without this, the
+    // next account could briefly render the previous user's data.
+    queryClient.clear();
+  };
+
+  // A new session must never reuse cached data from a previous account.
+  // Only /me is seeded; the partnership query is left to fetch the full room
+  // record (including both member profiles) on mount.
+  const startSession = (nextUser: User) => {
+    queryClient.removeQueries();
+    queryClient.setQueryData(['me'], nextUser);
   };
 
   const login = useMutation({
     mutationFn: (data: LoginInput) => authApi.login(data),
     onSuccess: (data) => {
+      startSession(data.user);
       setAuth(data.user, data.tokens.accessToken, data.tokens.refreshToken);
       toast.success('Welcome back!');
     },
@@ -30,6 +42,8 @@ export const useAuth = () => {
   const register = useMutation({
     mutationFn: (data: RegisterInput) => authApi.register(data),
     onSuccess: (data) => {
+      // Brand-new account: no partnership and no inherited room settings.
+      startSession(data.user);
       setAuth(data.user, data.tokens.accessToken, data.tokens.refreshToken);
       toast.success('Account created successfully!');
     },
@@ -42,7 +56,10 @@ export const useAuth = () => {
     mutationFn: (data: UpdateProfileInput) => authApi.updateProfile(data),
     onSuccess: (data) => {
       useAuthStore.getState().updateUser(data);
-      queryClient.invalidateQueries({ queryKey: ['me'] });
+      // The API returns the definitive user row, so there is no stale cache
+      // window here (which previously leaked the previous user's name).
+      queryClient.setQueryData(['me'], data);
+      queryClient.invalidateQueries({ queryKey: ['partnership'] });
       queryClient.invalidateQueries({ queryKey: ['prayers'] });
       toast.success('Profile updated');
     },

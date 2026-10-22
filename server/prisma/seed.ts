@@ -52,7 +52,8 @@ async function main() {
       user1Id: user1.id,
       user2Id: user2.id,
       inviteCode: 'DIT123',
-      status: 'active'
+      status: 'active',
+      prayerEnabled: true
     }
   });
 

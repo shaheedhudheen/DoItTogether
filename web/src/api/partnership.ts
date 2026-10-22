@@ -1,5 +1,5 @@
 import apiClient from './client';
-import { Partnership, ApiResponse } from '@dit/shared';
+import { Partnership, ApiResponse, UpdatePartnershipSettingsInput } from '@dit/shared';
 
 export const partnershipApi = {
   get: async () => {
@@ -12,6 +12,10 @@ export const partnershipApi = {
   },
   join: async (data: { inviteCode: string }) => {
     const response = await apiClient.post<ApiResponse<{ partnership: Partnership }>>('/partnership/join', data);
+    return response.data.data.partnership;
+  },
+  updateSettings: async (data: UpdatePartnershipSettingsInput) => {
+    const response = await apiClient.patch<ApiResponse<{ partnership: Partnership }>>('/partnership/settings', data);
     return response.data.data.partnership;
   },
   leave: async () => {

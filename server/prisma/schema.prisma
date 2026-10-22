@@ -37,6 +37,9 @@ model Partnership {
   user2Id    String?
   inviteCode String   @unique
   status     String   // pending, active, dissolved
+  // Room-wide prayer tracker setting. Chosen by the creator during onboarding
+  // and inherited automatically by the partner who joins with the code.
+  prayerEnabled Boolean @default(false)
   createdAt  DateTime @default(now())
 
   user1      User     @relation("User1", fields: [user1Id], references: [id])

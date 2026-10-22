@@ -6,6 +6,8 @@ import { PrismaClient } from '@prisma/client';
 import { env } from '../../config/env';
 import { AuthRequest } from '../../middleware/auth';
 import { sha256 } from '../../utils/helpers';
+import { findCurrentPartnership, setPartnershipPrayerEnabled } from '../../utils/partnership';
+import { getIo } from '../../socket';
 import {
   setRefreshCookie,
   clearRefreshCookie,
@@ -41,7 +43,9 @@ const sanitizeUser = (user: any, partnershipId: string | null = null) => {
 
 export const register = async (req: Request, res: Response) => {
   try {
-    const { email, password, displayName } = req.body;
+    const { password, displayName } = req.body;
+    // Emails are case-insensitive; store/compare one canonical form.
+    const email = String(req.body.email).trim().toLowerCase();
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return res.status(400).json({ success: false, message: 'Email already in use' });
 
@@ -78,7 +82,8 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = String(req.body.email).trim().toLowerCase();
     const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -98,12 +103,7 @@ export const login = async (req: Request, res: Response) => {
     await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHashes: hashes } });
     setRefreshCookie(res, tokens.refreshToken);
 
-    const partnership = await prisma.partnership.findFirst({
-      where: {
-        OR: [{ user1Id: user.id }, { user2Id: user.id }],
-        status: { in: ['pending', 'active'] }
-      }
-    });
+    const partnership = await findCurrentPartnership(user.id);
 
     res.json({
       success: true,
@@ -151,12 +151,7 @@ export const refresh = async (req: Request, res: Response) => {
     await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHashes: hashes } });
     setRefreshCookie(res, tokens.refreshToken);
 
-    const partnership = await prisma.partnership.findFirst({
-      where: {
-        OR: [{ user1Id: decoded.id }, { user2Id: decoded.id }],
-        status: { in: ['pending', 'active'] }
-      }
-    });
+    const partnership = await findCurrentPartnership(decoded.id);
 
     res.json({
       success: true,
@@ -202,12 +197,7 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const partnership = await prisma.partnership.findFirst({
-      where: {
-        OR: [{ user1Id: user.id }, { user2Id: user.id }],
-        status: { in: ['pending', 'active'] }
-      }
-    });
+    const partnership = await findCurrentPartnership(user.id);
 
     res.json({ success: true, data: { user: sanitizeUser(user, partnership?.id ?? null) } });
   } catch (error) {
@@ -218,28 +208,31 @@ export const getMe = async (req: AuthRequest, res: Response) => {
 export const updateProfile = async (req: AuthRequest, res: Response) => {
   try {
     const { displayName, avatarUrl, prayerEnabled } = req.body;
-    const user = await prisma.user.update({
+    let user = await prisma.user.update({
       where: { id: req.user.id },
-      data: { displayName, avatarUrl, prayerEnabled }
+      data: { displayName, avatarUrl }
     });
 
-    const partnership = await prisma.partnership.findFirst({
-      where: {
-        OR: [{ user1Id: user.id }, { user2Id: user.id }],
-        status: { in: ['pending', 'active'] }
-      }
-    });
+    const partnership = await findCurrentPartnership(user.id);
 
-    if (prayerEnabled && partnership) {
-      const count = await prisma.prayerTask.count({ where: { partnershipId: partnership.id } });
-      if (count === 0) {
-        const prayerNames = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
-        await prisma.prayerTask.createMany({
-          data: prayerNames.map((name, index) => ({
-            partnershipId: partnership.id,
-            name,
-            sortOrder: index
-          }))
+    if (prayerEnabled !== undefined) {
+      if (partnership) {
+        // Prayer tracking is a room-level setting, so a legacy client toggling
+        // it here still updates both partners and creates the prayer tasks.
+        await setPartnershipPrayerEnabled(partnership.id, prayerEnabled);
+        const refreshed = await prisma.user.findUnique({ where: { id: user.id } });
+        if (refreshed) user = refreshed;
+
+        const settingsPayload = { partnership: { ...partnership, prayerEnabled } };
+        getIo().to(partnership.id).emit('partnership:settings', settingsPayload);
+        getIo().to(partnership.user1Id).emit('partnership:settings', settingsPayload);
+        if (partnership.user2Id) {
+          getIo().to(partnership.user2Id).emit('partnership:settings', settingsPayload);
+        }
+      } else {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { prayerEnabled }
         });
       }
     }
